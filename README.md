@@ -52,3 +52,5 @@ En CodePen en un solo archivo HTML
 [Krita](https://krita.org)
 
 [Canva](https://www.canva.com)
+
+IMPORTANTE: No confundir con LibrePhoto**s**
