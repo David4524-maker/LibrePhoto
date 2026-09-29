@@ -20,6 +20,8 @@ LibrePhoto es un **editor de imagenes gratis y de codigo abierto** y su funcion 
 
 -Modo claro y oscuro
 
+-Interfaz minialista y AERO
+
 ---
 
 ## ¿Que formatos se pueden subir a LibrePhoto?
