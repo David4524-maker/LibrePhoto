@@ -54,3 +54,7 @@ En CodePen en un solo archivo HTML
 [Canva](https://www.canva.com)
 
 IMPORTANTE: No confundir con LibrePhoto**s**
+
+## Licencia
+
+Este proyecto tiene una licencia MIT
