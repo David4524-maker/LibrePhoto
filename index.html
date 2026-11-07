@@ -49,7 +49,10 @@
   .tab:hover{color:var(--text)}
   .tab[aria-selected="true"]{background:var(--panel);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.25)}
   .canvas-container{position:relative;overflow:hidden;border-radius:12px;border:1px solid var(--border);background-color:var(--bg-2);background-image:linear-gradient(45deg,rgba(148,163,184,.10) 25%,transparent 25%),linear-gradient(-45deg,rgba(148,163,184,.10) 25%,transparent 25%),linear-gradient(45deg,transparent 75%,rgba(148,163,184,.10) 75%),linear-gradient(-45deg,transparent 75%,rgba(148,163,184,.10) 75%);background-size:22px 22px;background-position:0 0,0 11px,11px -11px,-11px 0;transition:border-color .3s ease,box-shadow .3s ease,background-color .3s ease}
-  #editor-canvas{display:block;max-width:100%;max-height:100%;transform-origin:center center;transition:transform .06s linear;box-shadow:0 8px 40px -12px rgba(0,0,0,.7);touch-action:none}
+  #editor-canvas{display:block;position:absolute;left:50%;top:50%;max-width:none;max-height:none;transform:translate(-50%,-50%);transform-origin:center center;box-shadow:0 8px 40px -12px rgba(0,0,0,.7);touch-action:none;-webkit-user-drag:none;user-select:none;-webkit-user-select:none}
+  #stage{-webkit-user-select:none;user-select:none}
+  img,canvas{-webkit-user-drag:none}
+  body.panning,body.panning *{user-select:none!important;-webkit-user-select:none!important;cursor:grabbing!important}
   .grid-overlay{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity .2s;background-image:linear-gradient(to right,rgba(255,255,255,.55) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.55) 1px,transparent 1px);background-size:33.333% 33.333%}
   .grid-overlay.on{opacity:.55}
   .dropzone{border:2px dashed var(--border);border-radius:14px;padding:1.1rem;text-align:center;cursor:pointer;transition:all .18s;background:var(--panel-2)}
@@ -1174,13 +1177,14 @@ const downloadBtn = $('#download-btn');
 const undoBtn = $('#undo-btn');
 const redoBtn = $('#redo-btn');
 
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 /* ============ Toasts ============ */
 const toastHost = $('#toasts');
 function toast(msg, type = 'info', ms = 3200) {
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   el.setAttribute('role', type === 'err' ? 'alert' : 'status');
-  el.innerHTML = `<span style="flex:1">${msg}</span>`;
+  const span = document.createElement('span'); span.style.flex = '1'; span.textContent = msg; el.appendChild(span);
   toastHost.appendChild(el);
   setTimeout(() => { el.classList.add('leaving'); setTimeout(() => el.remove(), 240); }, ms);
 }
@@ -1267,10 +1271,10 @@ function refreshSliderLabels() {
 }
 (function buildFineRotate() {
   const range = $('#rng-fineRotate'), number = $('#num-fineRotate');
-  const sync = (v, live) => { const val = clamp(parseFloat(v), -45, 45); state.fineRotate = val; range.value = val; number.value = val; isLive = !!live; scheduleRender(); };
+  const sync = (v, live) => { const val = clamp(parseFloat(v), -45, 45); state.fineRotate = val; range.value = val; number.value = val; isLive = !!live; baseDirty = true; scheduleRender(); };
   range.addEventListener('input', e => sync(e.target.value, true));
   range.addEventListener('change', e => { sync(e.target.value, false); pushHistory(); });
-  number.addEventListener('input', e => sync(e.target.value, true));
+  number.addEventListener('input', e => { if (e.target.value !== '') sync(e.target.value, true); });
   number.addEventListener('change', e => { sync(e.target.value, false); pushHistory(); });
 })();
 
@@ -1330,11 +1334,28 @@ const fileInput = $('#file-input');
 const dropzone = $('#dropzone');
 dropzone.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', e => { if (e.target.files[0]) loadFile(e.target.files[0]); fileInput.value = ''; });
+dropzone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); fileInput.click(); } });
+fileInput.addEventListener('click', e => e.stopPropagation());
 let dragDepth = 0;
-window.addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; document.body.classList.add('dragging'); });
-window.addEventListener('dragleave', e => { e.preventDefault(); if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); } });
-window.addEventListener('dragover', e => e.preventDefault());
-window.addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging'); const f = e.dataTransfer.files?.[0]; if (f) loadFile(f); });
+const hasFiles = e => { const ty = e.dataTransfer && e.dataTransfer.types; return !!ty && Array.from(ty).includes('Files'); };
+const endDrag = () => { dragDepth = 0; document.body.classList.remove('dragging'); };
+// El overlay solo aparece al arrastrar archivos desde FUERA de la app (no al arrastrar el canvas, texto, etc.)
+window.addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; document.body.classList.add('dragging'); });
+window.addEventListener('dragleave', e => { if (!hasFiles(e)) return; e.preventDefault(); if (--dragDepth <= 0) endDrag(); });
+window.addEventListener('dragover', e => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+window.addEventListener('drop', e => {
+  endDrag(); if (!hasFiles(e)) return; e.preventDefault();
+  const files = Array.from(e.dataTransfer.files || []);
+  const f = files.find(x => x.type.startsWith('image/')) || files[0];
+  if (f) loadFile(f);
+});
+window.addEventListener('dragend', endDrag);
+window.addEventListener('blur', endDrag);
+// Nunca iniciar el arrastre nativo de la imagen/canvas (era lo que "arrastraba toda la pantalla")
+window.addEventListener('dragstart', e => {
+  const el = e.target && e.target.nodeType === 1 ? e.target : (e.target && e.target.parentElement);
+  if (el && el.closest && el.closest('#stage, canvas, img')) e.preventDefault();
+});
 window.addEventListener('paste', e => {
   const items = e.clipboardData?.items; if (!items) return;
   for (const it of items) if (it.type.startsWith('image/')) { const f = it.getAsFile(); if (f) { loadFile(f, 'Pasted'); e.preventDefault(); return; } }
@@ -1348,8 +1369,11 @@ function loadFile(file, forcedName) {
     URL.revokeObjectURL(url);
     img = image;
     fileMeta = { name: forcedName || file.name, type: file.type, size: file.size };
-    cropRect = null; cropMode = false; exitCropMode();
+    cropRect = null; pendingCrop = null; cropMode = false; exitCropMode();
     state = { ...DEFAULTS };
+    currentBaseURL = null; userZoomed = false;
+    $$('.preset').forEach(p => p.classList.remove('active'));
+    stage.style.touchAction = 'none';
     annStrokes = []; annObjects = []; annDirty = true; selectedAnnId = null;
     annRaster.width = annRaster.height = 0;
     history = []; historyIndex = -1;
@@ -1364,6 +1388,7 @@ function loadFile(file, forcedName) {
     $('#resize-w').value = image.naturalWidth; $('#resize-h').value = image.naturalHeight;
     originalRatio = image.naturalWidth / image.naturalHeight;
     pushHistory(); render(); fitToScreen(); updateEstimate();
+    $('#status-modified').classList.add('hidden');
     loading.classList.add('hidden'); loading.classList.remove('flex');
     refreshAnnList();
   };
@@ -1411,7 +1436,7 @@ function renderBase() {
   baseCtx.imageSmoothingEnabled = true; baseCtx.imageSmoothingQuality = 'high';
   baseCtx.drawImage(img, -iw/2, -ih/2, iw, ih);
   baseCtx.restore();
-  baseDirty = false;
+  baseDirty = false; currentBaseURL = null;
 }
 function buildFilterString(s = state) {
   const f = [];
@@ -1575,7 +1600,8 @@ function render() {
   const src = (cropMode || !cropRect) ? full : cropRect;
   const outW = Math.max(1, Math.round(src.w));
   const outH = Math.max(1, Math.round(src.h));
-  if (canvas.width !== outW || canvas.height !== outH) { canvas.width = outW; canvas.height = outH; if (annStrokes.length || annObjects.length) annDirty = true; }
+  if (canvas.width !== outW || canvas.height !== outH) { canvas.width = outW; canvas.height = outH; if (annStrokes.length || annObjects.length) annDirty = true; if (!userZoomed) fitToScreen(); }
+  cropClear.classList.toggle('hidden', !cropRect);
   ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,outW,outH);
   if (previewOriginal) { ctx.drawImage(baseCanvas, src.x, src.y, src.w, src.h, 0, 0, outW, outH); updateStatus(); return; }
   ctx.save();
@@ -1592,13 +1618,13 @@ function render() {
   if (annObjects.length) drawAnnObjects(ctx);
   if (currentStroke) {
     ctx.save(); const s = currentStroke;
-    if (s.tool === 'eraser') { ctx.globalCompositeOperation = 'destination-out'; ctx.strokeStyle = 'rgba(0,0,0,1)'; ctx.lineWidth = s.size; }
+    if (s.tool === 'eraser') { ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = s.size; }
     else if (s.tool === 'highlighter') { ctx.globalAlpha = (s.alpha ?? 35) / 100; ctx.strokeStyle = s.color; ctx.lineWidth = s.size; }
     else if (s.tool === 'airbrush') { ctx.globalAlpha = (s.alpha ?? 20) / 100; ctx.strokeStyle = s.color; ctx.lineWidth = s.size; }
     else { ctx.strokeStyle = s.color; ctx.lineWidth = s.size; }
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.beginPath();
-    if (s.points.length === 1) { ctx.arc(s.points[0][0], s.points[0][1], Math.max(1, s.size/2), 0, Math.PI*2); ctx.fillStyle = s.tool === 'eraser' ? 'rgba(0,0,0,1)' : s.color; ctx.fill(); }
+    if (s.points.length === 1) { ctx.arc(s.points[0][0], s.points[0][1], Math.max(1, s.size/2), 0, Math.PI*2); ctx.fillStyle = s.tool === 'eraser' ? 'rgba(255,255,255,.5)' : s.color; ctx.fill(); }
     else { ctx.moveTo(s.points[0][0], s.points[0][1]); for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i][0], s.points[i][1]); ctx.stroke(); }
     ctx.restore();
   }
@@ -1614,7 +1640,6 @@ function updateStatus() {
   $('#status-zoom').textContent = `Zoom ${Math.round(zoom*100)}%`;
   $('#info-zoom').textContent = Math.round(zoom*100) + '%';
   $('#zoom-label').textContent = Math.round(zoom*100) + '%';
-  $('#status-modified').classList.remove('hidden');
 }
 function syncControls() {
   Object.entries(sliderRegistry).forEach(([key, { range, number, cfg }]) => {
@@ -1631,15 +1656,20 @@ function snapshotAnnotations() {
     annObjects: annObjects.map(o => o.type === 'image'
       ? { id:o.id, type:'image', x:o.x, y:o.y, w:o.w, h:o.h, srcId:o.srcId } : o) });
 }
+let currentBaseURL = null;
 function pushHistory(opts) {
-  const snap = snapshotAnnotations();
   const withBase = !!(opts && opts.withBase);
-  if (!withBase && history[historyIndex] && history[historyIndex].snap === snap) return;
+  if (withBase) { if (baseDirty) renderBase(); currentBaseURL = baseCanvas.toDataURL('image/png'); }
+  else if (baseDirty) currentBaseURL = null;
+  const snap = snapshotAnnotations();
+  const top = history[historyIndex];
+  if (!withBase && top && top.snap === snap && top.base === currentBaseURL && top.imgRef === img) return;
   history = history.slice(0, historyIndex + 1);
-  history.push({ snap, base: withBase ? baseCanvas.toDataURL('image/png') : null });
+  history.push({ snap, base: currentBaseURL, imgRef: img });
   if (history.length > 40) history.shift();
   historyIndex = history.length - 1;
   updateHistoryButtons();
+  if (historyIndex > 0) $('#status-modified').classList.remove('hidden');
 }
 function restoreHistory(idx) {
   const entry = history[idx]; if (!entry) return;
@@ -1648,15 +1678,23 @@ function restoreHistory(idx) {
   cropRect = data.crop || null;
   annStrokes = data.annStrokes || []; annObjects = data.annObjects || [];
   annDirty = true; selectedAnnId = null;
+  if (entry.imgRef && entry.imgRef !== img) {
+    img = entry.imgRef; originalRatio = img.naturalWidth / img.naturalHeight;
+    $('#info-dim').textContent = `${img.naturalWidth} × ${img.naturalHeight}`;
+    resizeW.value = img.naturalWidth; resizeH.value = img.naturalHeight;
+  }
+  currentBaseURL = entry.base || null;
   syncControls();
   if (entry.base) {
     const im = new Image();
-    im.onload = () => { baseCanvas.width = im.width; baseCanvas.height = im.height;
+    im.onload = () => { if (history[historyIndex] !== entry) return;
+      baseCanvas.width = im.width; baseCanvas.height = im.height;
       baseCtx.setTransform(1,0,0,1,0,0); baseCtx.clearRect(0,0,im.width,im.height); baseCtx.drawImage(im,0,0);
       baseDirty = false; render(); };
     im.src = entry.base;
   } else { baseDirty = true; render(); }
   updateHistoryButtons(); refreshAnnList();
+  if (idx > 0) $('#status-modified').classList.remove('hidden');
 }
 function undo() { if (historyIndex <= 0) return; historyIndex--; restoreHistory(historyIndex); toast(t('toast.undo'), 'info', 1100); }
 function redo() { if (historyIndex >= history.length - 1) return; historyIndex++; restoreHistory(historyIndex); toast(t('toast.redo'), 'info', 1100); }
@@ -1722,33 +1760,33 @@ $$('#crop-ratios .chip')[0].classList.add('active');
 cropToggle.addEventListener('click', () => cropMode ? exitCropMode() : enterCropMode());
 $('#crop-cancel').addEventListener('click', exitCropMode);
 $('#crop-apply').addEventListener('click', applyCrop);
-cropClear.addEventListener('click', () => { cropRect = null; pendingCrop = null; baseDirty = true; render(); pushHistory(); cropClear.classList.add('hidden'); });
+cropClear.addEventListener('click', () => { cropRect = null; pendingCrop = null; render(); pushHistory(); });
 function enterCropMode() {
   if (!img) { toast(t('toast.needImage'), 'warn'); return; }
   if (activeTool) setActiveTool('');
   if (baseDirty) renderBase();
-  cropMode = true; zoom = 1; panX = 0; panY = 0; applyView(); render();
+  cropMode = true; render(); fitToScreen();
   cropLayer.classList.remove('hidden');
   cropToggle.textContent = t('crop.cancel'); cropToggle.classList.remove('btn-primary');
   cropActions.classList.remove('hidden'); cropActions.classList.add('grid');
-  pendingCrop = cropRect ? { ...cropRect } : null;
-  if (pendingCrop) drawCropBox(); else centerCropBox();
+  if (cropRect) { pendingCrop = displayFromImageRect(cropRect); drawCropBox(); } else centerCropBox();
 }
 function exitCropMode() {
+  const wasCrop = cropMode;
   cropMode = false; cropDrag = null;
   cropLayer.classList.add('hidden'); cropBox.classList.add('hidden');
-  cropToggle.textContent = cropRect ? t('crop.apply') : t('crop.toggleOn');
+  cropToggle.textContent = t('crop.toggleOn');
   cropToggle.classList.add('btn-primary');
   cropActions.classList.add('hidden'); cropActions.classList.remove('grid');
-  if (img) render();
+  if (img) { render(); if (wasCrop) fitToScreen(); }
 }
 function centerCropBox() {
   if (!img) return;
-  const rect = canvas.getBoundingClientRect();
+  const cr = canvas.getBoundingClientRect(), lr = cropLayer.getBoundingClientRect();
   const ratio = cropRatio === 'free' ? (canvas.width / canvas.height) : parseFloat(cropRatio);
-  let w = rect.width * .75, h = w / ratio;
-  if (h > rect.height * .75) { h = rect.height * .75; w = h * ratio; }
-  pendingCrop = { x:(rect.width-w)/2, y:(rect.height-h)/2, w, h, _display:true };
+  let w = cr.width * .75, h = w / ratio;
+  if (h > cr.height * .75) { h = cr.height * .75; w = h * ratio; }
+  pendingCrop = { x:(cr.left-lr.left)+(cr.width-w)/2, y:(cr.top-lr.top)+(cr.height-h)/2, w, h, _display:true };
   drawCropBox();
 }
 function drawCropBox() {
@@ -1758,14 +1796,15 @@ function drawCropBox() {
   cropBox.style.left = r.x + 'px'; cropBox.style.top = r.y + 'px';
   cropBox.style.width = r.w + 'px'; cropBox.style.height = r.h + 'px';
 }
+// Conversión consciente del zoom/pan: getBoundingClientRect ya incluye la transformación CSS
 function displayFromImageRect(rect) {
-  const sx = canvas.clientWidth / canvas.width, sy = canvas.clientHeight / canvas.height;
   const cr = canvas.getBoundingClientRect(), lr = cropLayer.getBoundingClientRect();
+  const sx = cr.width / canvas.width, sy = cr.height / canvas.height;
   return { x:(cr.left-lr.left)+rect.x*sx, y:(cr.top-lr.top)+rect.y*sy, w:rect.w*sx, h:rect.h*sy, _display:true };
 }
 function displayToImageRect(r) {
-  const sx = canvas.width / canvas.clientWidth, sy = canvas.height / canvas.clientHeight;
   const cr = canvas.getBoundingClientRect(), lr = cropLayer.getBoundingClientRect();
+  const sx = canvas.width / cr.width, sy = canvas.height / cr.height;
   return { x:(r.x-(cr.left-lr.left))*sx, y:(r.y-(cr.top-lr.top))*sy, w:r.w*sx, h:r.h*sy };
 }
 cropLayer.addEventListener('pointerdown', e => {
@@ -1796,12 +1835,14 @@ cropLayer.addEventListener('pointermove', e => {
     if (hd.includes('s')) nh = o.h + (py - cropDrag.startY);
     if (hd.includes('w')) { nx = o.x + (px - cropDrag.startX); nw = o.w - (px - cropDrag.startX); }
     if (hd.includes('n')) { ny = o.y + (py - cropDrag.startY); nh = o.h - (py - cropDrag.startY); }
-    if (ratio) nh = nw / ratio;
+    if (ratio) { nh = nw / ratio; if (hd.includes('n')) ny = o.y + o.h - nh; }
     pendingCrop = { x:nx, y:ny, w:Math.max(20,nw), h:Math.max(20,nh), _display:true };
   }
   drawCropBox();
 });
-cropLayer.addEventListener('pointerup', e => { if (!cropDrag) return; cropDrag = null; try { cropLayer.releasePointerCapture(e.pointerId); } catch (err) {} });
+const endCropDrag = e => { if (!cropDrag) return; cropDrag = null; try { cropLayer.releasePointerCapture(e.pointerId); } catch (err) {} };
+cropLayer.addEventListener('pointerup', endCropDrag);
+cropLayer.addEventListener('pointercancel', endCropDrag);
 function applyCrop() {
   if (!pendingCrop || pendingCrop.w < 8 || pendingCrop.h < 8) return;
   const r = displayToImageRect(pendingCrop);
@@ -1813,7 +1854,9 @@ function applyCrop() {
 }
 
 /* ============ Zoom / Pan ============ */
-function applyView() { canvas.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`; updateStatus(); }
+let userZoomed = false;
+function applyView() { canvas.style.transform = `translate(-50%, -50%) translate(${panX}px, ${panY}px) scale(${zoom})`; updateStatus(); }
+function zoom100() { zoom = 1; panX = 0; panY = 0; userZoomed = true; applyView(); }
 function setZoom(z, cx, cy) {
   const next = clamp(z, 0.05, 16);
   if (cx !== undefined) {
@@ -1821,18 +1864,24 @@ function setZoom(z, cx, cy) {
     const dx = cx - (rect.left + rect.width / 2), dy = cy - (rect.top + rect.height / 2);
     panX -= dx * (next / zoom - 1); panY -= dy * (next / zoom - 1);
   }
-  zoom = next; applyView();
+  zoom = next; userZoomed = true; applyView();
 }
 function fitToScreen() {
   if (!img) return;
   const sr = stage.getBoundingClientRect(); const pad = 48;
   zoom = clamp(Math.min((sr.width-pad)/canvas.width, (sr.height-pad)/canvas.height), 0.05, 8);
-  panX = 0; panY = 0; applyView();
+  panX = 0; panY = 0; userZoomed = false; applyView();
+}
+function refit() {
+  if (!img) return;
+  const box = (cropMode && pendingCrop) ? displayToImageRect(pendingCrop) : null;
+  fitToScreen();
+  if (box) { pendingCrop = displayFromImageRect(box); drawCropBox(); }
 }
 $('#zoom-in').addEventListener('click', () => setZoom(zoom * 1.25));
 $('#zoom-out').addEventListener('click', () => setZoom(zoom / 1.25));
 $('#zoom-fit').addEventListener('click', fitToScreen);
-$('#zoom-100').addEventListener('click', () => { zoom = 1; panX = 0; panY = 0; applyView(); });
+$('#zoom-100').addEventListener('click', zoom100);
 $('#zoom-label').addEventListener('click', fitToScreen);
 stage.addEventListener('wheel', e => {
   if (!img || cropMode) return;
@@ -1842,14 +1891,28 @@ stage.addEventListener('wheel', e => {
 }, { passive: false });
 let panning = null;
 stage.addEventListener('pointerdown', e => {
-  if (!img || cropMode || activeTool) return;
+  if (!img || cropMode || activeTool || draggingAnn || resizingAnn) return;
   if (e.target.closest('button')) return;
   if (e.button !== 0 || zoom <= 1.001) return;
-  panning = { x:e.clientX, y:e.clientY, px:panX, py:panY }; stage.style.cursor = 'grabbing';
+  e.preventDefault(); // evita selección / arrastre nativo / scroll de la página
+  panning = { id:e.pointerId, x:e.clientX, y:e.clientY, px:panX, py:panY };
+  try { stage.setPointerCapture(e.pointerId); } catch (err) {}
+  document.body.classList.add('panning'); stage.style.cursor = 'grabbing';
 });
-window.addEventListener('pointermove', e => { if (!panning) return; panX = panning.px + (e.clientX - panning.x); panY = panning.py + (e.clientY - panning.y); applyView(); });
-window.addEventListener('pointerup', () => { panning = null; stage.style.cursor = ''; });
-window.addEventListener('resize', () => { if (img) fitToScreen(); });
+stage.addEventListener('pointermove', e => {
+  if (!panning || e.pointerId !== panning.id) return;
+  panX = panning.px + (e.clientX - panning.x); panY = panning.py + (e.clientY - panning.y);
+  userZoomed = true; applyView();
+});
+function endPan(e) {
+  if (!panning || (e && e.pointerId !== panning.id)) return;
+  try { stage.releasePointerCapture(panning.id); } catch (err) {}
+  panning = null; stage.style.cursor = ''; document.body.classList.remove('panning');
+}
+stage.addEventListener('pointerup', endPan);
+stage.addEventListener('pointercancel', endPan);
+window.addEventListener('blur', () => endPan());
+window.addEventListener('resize', refit);
 const gridBtn = $('#grid-btn');
 gridBtn.addEventListener('click', () => {
   showGrid = !showGrid; gridOverlay.classList.toggle('on', showGrid);
@@ -1863,10 +1926,10 @@ compareBtn.addEventListener('pointerdown', e => { e.preventDefault(); startCompa
 window.addEventListener('pointerup', stopCompare);
 compareBtn.addEventListener('pointerleave', stopCompare);
 $('#fullscreen-btn').addEventListener('click', () => {
-  if (!document.fullscreenElement) stage.requestFullscreen?.().then(() => setTimeout(fitToScreen, 120)).catch(() => {});
+  if (!document.fullscreenElement) stage.requestFullscreen?.().then(() => setTimeout(refit, 120)).catch(() => {});
   else document.exitFullscreen?.();
 });
-document.addEventListener('fullscreenchange', () => setTimeout(fitToScreen, 120));
+document.addEventListener('fullscreenchange', () => setTimeout(refit, 120));
 $('#reset-filters').addEventListener('click', () => {
   if (!img) return;
   const keep = { rotate:state.rotate, fineRotate:state.fineRotate, flipH:state.flipH, flipV:state.flipV };
@@ -1978,6 +2041,8 @@ function canvasCoords(e) {
 
 /* ============ Polish ============ */
 function ensureBaseReady() { if (baseDirty) renderBase(); }
+// Con un recorte activo, las coordenadas del canvas están desplazadas respecto a la imagen base
+function toBaseCoords(pt) { return (!cropMode && cropRect) ? { x: pt.x + cropRect.x, y: pt.y + cropRect.y } : pt; }
 function applyPolishAt(px, py) {
   const tool = activeTool; if (!POLISH_TOOLS.includes(tool)) return;
   ensureBaseReady();
@@ -2049,8 +2114,7 @@ canvas.addEventListener('pointerdown', e => {
     polishPointerId = e.pointerId;
     try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
     polishDrawing = true; polishLastPoint = pt;
-    pushHistory({ withBase: true });
-    applyPolishAt(pt.x, pt.y); scheduleRender();
+    { const bp = toBaseCoords(pt); applyPolishAt(bp.x, bp.y); } scheduleRender();
     e.preventDefault(); return;
   }
   if (activeTool === 'pen' || activeTool === 'highlighter' || activeTool === 'eraser') {
@@ -2071,7 +2135,7 @@ canvas.addEventListener('pointermove', e => {
     for (let i = 1; i <= steps; i++) {
       const ix = last.x + (pt.x - last.x) * (i / steps);
       const iy = last.y + (pt.y - last.y) * (i / steps);
-      applyPolishAt(ix, iy);
+      const bp = toBaseCoords({ x: ix, y: iy }); applyPolishAt(bp.x, bp.y);
     }
     polishLastPoint = pt; scheduleRender(); e.preventDefault(); return;
   }
@@ -2110,7 +2174,7 @@ function endPointer(e) {
   if (polishDrawing && e.pointerId === polishPointerId) {
     polishDrawing = false; polishPointerId = null; polishLastPoint = null;
     try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
-    scheduleRender(); return;
+    pushHistory({ withBase: true }); scheduleRender(); return;
   }
   if (e.pointerId === drawingPointerId) {
     drawingPointerId = null;
@@ -2187,8 +2251,9 @@ function placePendingImage(pt) {
 /* ============ Eyedropper ============ */
 function sampleColorAt(px, py) {
   ensureBaseReady();
-  const sx = clamp(Math.round(px), 0, baseCanvas.width - 1);
-  const sy = clamp(Math.round(py), 0, baseCanvas.height - 1);
+  const bp = toBaseCoords({ x: px, y: py });
+  const sx = clamp(Math.round(bp.x), 0, baseCanvas.width - 1);
+  const sy = clamp(Math.round(bp.y), 0, baseCanvas.height - 1);
   const data = baseCtx.getImageData(sx, sy, 1, 1).data;
   const hex = rgbToHex(data[0], data[1], data[2]);
   $('#eyedrop-preview').style.background = hex; $('#eyedrop-hex').value = hex.toUpperCase();
@@ -2240,7 +2305,7 @@ function refreshAnnList() {
     row.className = 'ann-item' + (o.id === selectedAnnId ? ' selected' : '');
     const icon = o.type === 'text' ? '🅣' : '🖼';
     const label = o.type === 'text' ? o.text.replace(/\n/g, ' ').slice(0, 22) + (o.text.length > 22 ? '…' : '') : 'Image';
-    row.innerHTML = `<span style="flex:1">${icon} ${label}</span>`;
+    row.innerHTML = `<span style="flex:1">${icon} ${esc(label)}</span>`;
     const bSel = document.createElement('button');
     bSel.className = 'btn btn-ghost text-[10px]'; bSel.textContent = '✎';
     bSel.addEventListener('click', () => {
@@ -2298,10 +2363,16 @@ qualityRange.addEventListener('input', e => { qualityNum.value = e.target.value;
 qualityNum.addEventListener('input', e => { qualityRange.value = e.target.value; updateEstimate(); });
 $('#export-bg').addEventListener('change', updateEstimate);
 function buildExportCanvas() {
+  // Re-render limpio: sin caja de selección y con la nitidez completa (no la versión "live")
+  const prevSel = selectedAnnId, wasLive = isLive;
+  const needClean = !!prevSel || wasLive;
+  if (needClean) { selectedAnnId = null; isLive = false; render(); }
   const c = document.createElement('canvas'); c.width = canvas.width; c.height = canvas.height;
   const cx = c.getContext('2d');
   if (exportFormat.value === 'image/jpeg' && $('#export-bg').checked) { cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, c.width, c.height); }
-  cx.drawImage(canvas, 0, 0); return c;
+  cx.drawImage(canvas, 0, 0);
+  if (needClean) { selectedAnnId = prevSel; render(); }
+  return c;
 }
 let estimateTimer = null;
 function updateEstimate() {
@@ -2342,6 +2413,7 @@ $('#copy-btn').addEventListener('click', async () => {
 /* ============ Shortcuts ============ */
 let spaceHeld = false;
 window.addEventListener('keydown', e => {
+  if (!e.key) return;
   const el = e.target;
   const typing = el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA');
   const mod = e.ctrlKey || e.metaKey;
@@ -2349,13 +2421,14 @@ window.addEventListener('keydown', e => {
   if (mod && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) { e.preventDefault(); redo(); return; }
   if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); doDownload(); return; }
   if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); fileInput.click(); return; }
+  if (mod || e.altKey) return; // no robar Ctrl+R, Ctrl+F, Ctrl+P, etc. al navegador
   if (typing) return;
   switch (e.key) {
     case ' ': if (!spaceHeld) { spaceHeld = true; startCompare(); e.preventDefault(); } break;
     case '+': case '=': setZoom(zoom * 1.25); e.preventDefault(); break;
     case '-': case '_': setZoom(zoom / 1.25); e.preventDefault(); break;
     case '0': fitToScreen(); break;
-    case '1': zoom = 1; panX = 0; panY = 0; applyView(); break;
+    case '1': zoom100(); break;
     case 'r': case 'R': if (img) { state.rotate = (state.rotate + 90) % 360; cropRect = null; baseDirty = true; render(); pushHistory(); } break;
     case 'g': case 'G': gridBtn.click(); break;
     case 'f': case 'F': $('#fullscreen-btn').click(); break;
